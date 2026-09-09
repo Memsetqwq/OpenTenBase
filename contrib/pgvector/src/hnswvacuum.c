@@ -10,6 +10,15 @@
 #include "utils/memutils.h"
 
 /*
+ * Compatibility shim: vacuum_delay_point() gained a bool argument in PG18+.
+ * Map legacy no-argument calls to vacuum_delay_point(false) so the build
+ * succeeds on PG18 without breaking older PG versions.
+ */
+#if PG_VERSION_NUM >= 180000
+#define vacuum_delay_point() vacuum_delay_point(false)
+#endif
+
+/*
  * Check if deleted list contains an index TID
  */
 static bool

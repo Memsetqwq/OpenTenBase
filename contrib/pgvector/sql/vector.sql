@@ -118,13 +118,15 @@ CREATE AGGREGATE avg(vector) (
 	STYPE = double precision[],
 	FINALFUNC = vector_avg,
 	COMBINEFUNC = vector_combine,
-	INITCOND = '{0}'
+	INITCOND = '{0}',
+	PARALLEL = SAFE
 );
 
 CREATE AGGREGATE sum(vector) (
 	SFUNC = vector_add,
 	STYPE = vector,
-	COMBINEFUNC = vector_add
+	COMBINEFUNC = vector_add,
+	PARALLEL = SAFE
 );
 
 -- vector cast functions
@@ -446,13 +448,15 @@ CREATE AGGREGATE avg(halfvec) (
 	STYPE = double precision[],
 	FINALFUNC = halfvec_avg,
 	COMBINEFUNC = halfvec_combine,
-	INITCOND = '{0}'
+	INITCOND = '{0}',
+	PARALLEL = SAFE
 );
 
 CREATE AGGREGATE sum(halfvec) (
 	SFUNC = halfvec_add,
 	STYPE = halfvec,
-	COMBINEFUNC = halfvec_add
+	COMBINEFUNC = halfvec_add,
+	PARALLEL = SAFE
 );
 
 -- halfvec cast functions
@@ -912,3 +916,22 @@ CREATE OPERATOR CLASS sparsevec_l1_ops
 	OPERATOR 1 <+> (sparsevec, sparsevec) FOR ORDER BY float_ops,
 	FUNCTION 1 l1_distance(sparsevec, sparsevec),
 	FUNCTION 3 hnsw_sparsevec_support(internal);
+
+
+-- diagnostic helper functions for vector index introspection
+-- (used by SELECT * FROM ivfflat_index_info(...) / hnsw_index_info(...))
+
+CREATE FUNCTION ivfflat_index_info(regclass) RETURNS TABLE(
+	lists integer,
+	dimensions integer,
+	opclass text)
+	AS 'MODULE_PATHNAME', 'ivfflat_index_info'
+	LANGUAGE C STABLE STRICT;
+
+CREATE FUNCTION hnsw_index_info(regclass) RETURNS TABLE(
+	m integer,
+	ef_construction integer,
+	dimensions integer,
+	opclass text)
+	AS 'MODULE_PATHNAME', 'hnsw_index_info'
+	LANGUAGE C STABLE STRICT;

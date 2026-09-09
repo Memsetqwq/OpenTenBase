@@ -1,13 +1,27 @@
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/generic_xlog.h"
+#include "access/heapam.h"
+#include "access/relation.h"
+#include "access/table.h"
 #include "bitvec.h"
+#include "catalog/index.h"
+#include "catalog/pg_opclass.h"
 #include "catalog/pg_type.h"
+#include "commands/defrem.h"
 #include "fmgr.h"
+#include "funcapi.h"
 #include "halfutils.h"
 #include "halfvec.h"
 #include "ivfflat.h"
+#include "miscadmin.h"
 #include "storage/bufmgr.h"
+#include "utils/builtins.h"
+#include "utils/lsyscache.h"
+#include "utils/rel.h"
+#include "utils/snapmgr.h"
+#include "utils/syscache.h"
 
 /*
  * Allocate a vector array
@@ -371,3 +385,106 @@ ivfflat_bit_support(PG_FUNCTION_ARGS)
 
 	PG_RETURN_POINTER(&typeInfo);
 };
+
+/*
+ * Diagnostic helper: return the key runtime parameters of an ivfflat index
+ * (lists, dimensions, opclass name) as a single row.  Intended for "recall
+ * low" diagnostics — see project notes §v0.1 §5.
+ *
+ * Usage: SELECT * FROM ivfflat_index_info('my_ivfflat_idx'::regclass);
+ *
+ * Note: this is a single-row set-returning function; we materialise the row
+ * into a tuplestore during the first (and only) call.
+ */
+FUNCTION_PREFIX PG_FUNCTION_INFO_V1(ivfflat_index_info);
+Datum
+ivfflat_index_info(PG_FUNCTION_ARGS)
+{
+	Oid			indexOid = PG_GETARG_OID(0);
+	Relation	index;
+	char	   *amname;
+	int			lists;
+	int			dimensions;
+	Oid			opclassOid;
+	char	   *opclassName;
+	HeapTuple	indextup;
+	Datum		indclassDatum;
+	bool		isnull;
+	oidvector  *indclass;
+	HeapTuple	classtup;
+	Form_pg_opclass opclassForm;
+	ReturnSetInfo *rsinfo;
+	Tuplestorestate *tupstore;
+	Datum		values[3];
+	bool		nulls[3] = {false, false, false};
+
+	/* Open and validate the relation is an ivfflat index */
+	index = index_open(indexOid, AccessShareLock);
+
+	amname = get_am_name(index->rd_rel->relam);
+	if (amname == NULL || strcmp(amname, "ivfflat") != 0)
+	{
+		if (amname != NULL)
+			pfree(amname);
+		index_close(index, AccessShareLock);
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("relation \"%s\" is not an ivfflat index",
+						get_rel_name(indexOid))));
+	}
+	pfree(amname);
+
+	/* Read metapage: lists and dimensions */
+	IvfflatGetMetaPageInfo(index, &lists, &dimensions);
+
+	/*
+	 * Look up opclass name from the first index column's opclass.
+	 *
+	 * PG18 hides pg_index.indclass inside #ifdef CATALOG_VARLEN, so accessing
+	 * rd_index->indclass directly fails for extensions.  Read it via syscache
+	 * instead.
+	 */
+	indextup = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexOid));
+	if (!HeapTupleIsValid(indextup))
+	{
+		index_close(index, AccessShareLock);
+		elog(ERROR, "cache lookup failed for index %u", indexOid);
+	}
+	indclassDatum = SysCacheGetAttr(INDEXRELID, indextup,
+									Anum_pg_index_indclass, &isnull);
+	Assert(!isnull);
+	indclass = (oidvector *) DatumGetPointer(indclassDatum);
+	opclassOid = indclass->values[0];
+	ReleaseSysCache(indextup);
+
+	/* Resolve opclass name via pg_opclass syscache */
+	classtup = SearchSysCache1(CLAOID, ObjectIdGetDatum(opclassOid));
+	if (!HeapTupleIsValid(classtup))
+	{
+		index_close(index, AccessShareLock);
+		elog(ERROR, "cache lookup failed for opclass %u", opclassOid);
+	}
+	opclassForm = (Form_pg_opclass) GETSTRUCT(classtup);
+	opclassName = pstrdup(NameStr(opclassForm->opcname));
+	ReleaseSysCache(classtup);
+
+	/*
+	 * Materialise a single-row SRF.  InitMaterializedSRF() builds and stores
+	 * a tuplestore in rsinfo->setResult for us -- we just push our row into
+	 * it.  Do NOT create a second tuplestore or overwrite rsinfo->setResult,
+	 * as that would orphan the one already set up.
+	 */
+	InitMaterializedSRF(fcinfo, MAT_SRF_BLESS);
+	rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	tupstore = rsinfo->setResult;
+
+	values[0] = Int32GetDatum(lists);
+	values[1] = Int32GetDatum(dimensions);
+	values[2] = CStringGetTextDatum(opclassName);
+	tuplestore_putvalues(tupstore, rsinfo->setDesc, values, nulls);
+
+	pfree(opclassName);
+	index_close(index, AccessShareLock);
+
+	PG_RETURN_NULL();
+}
