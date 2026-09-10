@@ -3,6 +3,8 @@
 -- ============================================================================
 -- opentenbase_graph: lightweight graph traversal templates
 -- Compatible with PostgreSQL 10+ (OpenTenBase fork is PG10-based)
+
+CREATE SCHEMA IF NOT EXISTS opentenbase_graph;
 --
 -- Design notes (see doc/opentenbase_graph.md / doc/opentenbase_graph_zh.md):
 --   * Application layer creates the nodes / edges tables (any schema).
@@ -205,7 +207,7 @@ BEGIN
               AND NOT (e.%I = ANY(w.v))
         )
         SELECT 1 FROM walk WHERE n = $3 LIMIT 1',
-        dst_col, edges_table::text, src_col, dst_col
+        dst_col, dst_col, edges_table::text, src_col, dst_col
     );
     EXECUTE qry INTO hit USING start_id, max_depth, end_id;
     RETURN hit IS NOT NULL;

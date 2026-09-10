@@ -1,5 +1,4 @@
-CREATE EXTENSION opentenbase_graph;
-
+-- (CREATE EXTENSION loaded automatically by installcheck --load-extension)
 -- simple linear chain 1 -> 2 -> 3 -> 4 -> 5
 CREATE TABLE g_nodes (id bigserial PRIMARY KEY);
 SELECT setval('g_nodes_id_seq', 5);
@@ -36,9 +35,15 @@ SELECT opentenbase_graph.reachable('g_nodes', 'g_edges', 'src', 'dst', 1, 5, 10)
 -- reachable: reverse direction fails
 SELECT opentenbase_graph.reachable('g_nodes', 'g_edges', 'src', 'dst', 5, 1, 10) AS r;
 
--- branching tree: 1 -> {2, 3}; 2 -> {4, 5}; 3 -> {6, 7}
+-- branching tree (undirected): 1 - {2, 3}; 2 - {4, 5}; 3 - {6, 7}
 TRUNCATE g_edges;
-INSERT INTO g_edges VALUES (1, 2), (1, 3), (2, 4), (2, 5), (3, 6), (3, 7);
+INSERT INTO g_edges VALUES
+    (1, 2), (2, 1),
+    (1, 3), (3, 1),
+    (2, 4), (4, 2),
+    (2, 5), (5, 2),
+    (3, 6), (6, 3),
+    (3, 7), (7, 3);
 
 -- bfs depth 2 from root 1
 SELECT * FROM opentenbase_graph.bfs('g_nodes', 'g_edges', 'src', 'dst', 1, 2)
@@ -62,4 +67,3 @@ SELECT opentenbase_graph.bfs('g_nodes', 'g_edges', 'src; DROP TABLE x', 'dst', 1
 
 DROP TABLE g_edges;
 DROP TABLE g_nodes;
-DROP EXTENSION opentenbase_graph;
