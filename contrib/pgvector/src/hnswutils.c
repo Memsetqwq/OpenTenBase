@@ -10,17 +10,21 @@
 #include "catalog/index.h"
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_type.h"
+#include "common/hashfn.h"
 #include "commands/defrem.h"
 #include "fmgr.h"
 #include "funcapi.h"
 #include "hnsw.h"
 #include "lib/pairingheap.h"
 #include "miscadmin.h"
+#include "nodes/pg_list.h"
 #include "sparsevec.h"
 #include "storage/bufmgr.h"
 #include "utils/builtins.h"
 #include "utils/datum.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
+#include "utils/memdebug.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
@@ -179,9 +183,13 @@ HnswNewBuffer(Relation index, ForkNumber forkNum)
  * Init page
  */
 void
-HnswInitPage(Buffer buf, Page page, bool checksum)
+HnswInitPage(Buffer buf, Page page)
 {
-	PageInit(page, BufferGetPageSize(buf), sizeof(HnswPageOpaqueData), checksum);
+#if PG_VERSION_NUM >= 180000
+	PageInit(page, BufferGetPageSize(buf), sizeof(HnswPageOpaqueData));
+#else
+	PageInit(page, BufferGetPageSize(buf), sizeof(HnswPageOpaqueData), true);
+#endif
 	HnswPageGetOpaque(page)->nextblkno = InvalidBlockNumber;
 	HnswPageGetOpaque(page)->page_id = HNSW_PAGE_ID;
 }
@@ -1059,15 +1067,15 @@ SelectNeighbors(char *base, List *c, int lm, HnswSupport * support, bool *closer
 	if (list_length(w) <= lm)
 		return w;
 
-	wd = palloc(sizeof(HnswCandidate *) * list_length(w));
+	wd = palloc_array_checked(HnswCandidate *, list_length(w));
 
 	/* Ensure order of candidates is deterministic for closer caching */
 	if (sortCandidates)
 	{
 		if (base == NULL)
-			list_qsort(w, CompareCandidateDistances);
+			list_sort(w, CompareCandidateDistances);
 		else
-			list_qsort(w, CompareCandidateDistancesOffset);
+			list_sort(w, CompareCandidateDistancesOffset);
 	}
 
 	while (list_length(w) > 0 && list_length(r) < lm)
@@ -1417,8 +1425,9 @@ hnsw_sparsevec_support(PG_FUNCTION_ARGS)
 
 /*
  * Diagnostic helper: return the key runtime parameters of an hnsw index
- * (m, ef_construction, dimensions, opclass name) as a single row.
- * Intended for "recall low" diagnostics — see project notes §v0.1.1.
+ * (m, ef_construction, dimensions, opclass name, current session ef_search)
+ * as a single row.  Intended for "recall low" diagnostics — see project
+ * notes §v0.1.1.
  *
  * Usage: SELECT * FROM hnsw_index_info('my_hnsw_idx'::regclass);
  *
@@ -1437,6 +1446,8 @@ hnsw_index_info(PG_FUNCTION_ARGS)
 	int			dimensions;
 	Oid			opclassOid;
 	char	   *opclassName;
+	int			efSearch = HNSW_DEFAULT_EF_SEARCH;
+	char	   *efSearchStr;
 	Buffer		buf;
 	Page		page;
 	HnswMetaPage metap;
@@ -1448,8 +1459,8 @@ hnsw_index_info(PG_FUNCTION_ARGS)
 	Form_pg_opclass opclassForm;
 	ReturnSetInfo *rsinfo;
 	Tuplestorestate *tupstore;
-	Datum		values[4];
-	bool		nulls[4] = {false, false, false, false};
+	Datum		values[5];
+	bool		nulls[5] = {false, false, false, false, false};
 
 	/* Open and validate the relation is an hnsw index */
 	index = index_open(indexOid, AccessShareLock);
@@ -1489,6 +1500,29 @@ hnsw_index_info(PG_FUNCTION_ARGS)
 	dimensions = metap->dimensions;
 
 	UnlockReleaseBuffer(buf);
+
+	/*
+	 * Read current session's hnsw.ef_search GUC.  If missing (extension not
+	 * loaded?) or invalid, fall back to the compile-time default.  This makes
+	 * the function safe to call from any context where the GUC is accessible.
+	 *
+	 * Note: GetConfigOptionByName() takes (name, &varname, missing_ok).  The
+	 * varname out-param is only used for error messages inside the GUC machinery.
+	 */
+	{
+		const char *varname;
+
+		efSearchStr = GetConfigOptionByName("hnsw.ef_search", &varname, true);
+		(void) varname;
+	}
+	if (efSearchStr != NULL)
+	{
+		int			tmp = atoi(efSearchStr);
+
+		if (tmp >= HNSW_MIN_EF_SEARCH && tmp <= HNSW_MAX_EF_SEARCH)
+			efSearch = tmp;
+		pfree(efSearchStr);
+	}
 
 	/*
 	 * Look up opclass name from the first index column's opclass.
@@ -1535,6 +1569,7 @@ hnsw_index_info(PG_FUNCTION_ARGS)
 	values[1] = Int32GetDatum(efConstruction);
 	values[2] = Int32GetDatum(dimensions);
 	values[3] = CStringGetTextDatum(opclassName);
+	values[4] = Int32GetDatum(efSearch);
 	tuplestore_putvalues(tupstore, rsinfo->setDesc, values, nulls);
 
 	pfree(opclassName);

@@ -120,12 +120,34 @@ CREATE INDEX ON t USING ivfflat (val vector_l2_ops);
 DROP TABLE t;
 RESET maintenance_work_mem;
 
--- diagnostic helper: ivfflat_index_info()
+-- diagnostic helper: ivfflat_index_info() and ivfflat_recommend_probes()
 
 CREATE TABLE t (val vector(3));
 INSERT INTO t (val) VALUES ('[0,0,0]'), ('[1,2,3]'), ('[1,1,1]'), (NULL);
 CREATE INDEX t_val_idx ON t USING ivfflat (val vector_l2_ops) WITH (lists = 4);
 
+-- default probes (not yet set)
 SELECT * FROM ivfflat_index_info('t_val_idx'::regclass);
 
+-- custom probes
+SET ivfflat.probes = 3;
+SELECT * FROM ivfflat_index_info('t_val_idx'::regclass);
+RESET ivfflat.probes;
+
+-- recommender: default target_recall (0.9)
+SELECT * FROM ivfflat_recommend_probes('t_val_idx'::regclass);
+
+-- recommender: target_recall=0.99 -> 1.5x multiplier
+SELECT * FROM ivfflat_recommend_probes('t_val_idx'::regclass, 0.99);
+
+-- recommender: target_recall=0.999 -> 2.5x multiplier
+SELECT * FROM ivfflat_recommend_probes('t_val_idx'::regclass, 0.999);
+
+DROP TABLE t;
+
+-- error: ivfflat_recommend_probes rejects non-ivfflat indexes
+CREATE TABLE t (val vector(3));
+INSERT INTO t (val) VALUES ('[0,0,0]'), ('[1,2,3]'), ('[1,1,1]'), (NULL);
+CREATE INDEX t_val_idx ON t USING hnsw (val vector_l2_ops);
+SELECT ivfflat_recommend_probes('t_val_idx'::regclass);
 DROP TABLE t;

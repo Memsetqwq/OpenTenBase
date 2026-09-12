@@ -122,12 +122,34 @@ CREATE TABLE t (val vector(2001));
 CREATE INDEX ON t USING hnsw (val vector_l2_ops);
 DROP TABLE t;
 
--- diagnostic helper: hnsw_index_info()
+-- diagnostic helper: hnsw_index_info() and hnsw_recommend_ef_search()
 
 CREATE TABLE t (val vector(3));
 INSERT INTO t (val) VALUES ('[0,0,0]'), ('[1,2,3]'), ('[1,1,1]'), (NULL);
 CREATE INDEX t_val_idx ON t USING hnsw (val vector_l2_ops) WITH (m = 8, ef_construction = 32);
 
+-- default ef_search (not yet set)
 SELECT * FROM hnsw_index_info('t_val_idx'::regclass);
 
+-- custom ef_search
+SET hnsw.ef_search = 20;
+SELECT * FROM hnsw_index_info('t_val_idx'::regclass);
+RESET hnsw.ef_search;
+
+-- recommender: default top_k=10, target_recall=0.9
+SELECT * FROM hnsw_recommend_ef_search('t_val_idx'::regclass);
+
+-- recommender: target_recall=0.99 -> 1.5x multiplier
+SELECT * FROM hnsw_recommend_ef_search('t_val_idx'::regclass, 10, 0.99);
+
+-- recommender: top_k=50 forces ef_search up to 100
+SELECT * FROM hnsw_recommend_ef_search('t_val_idx'::regclass, 50);
+
+DROP TABLE t;
+
+-- error: hnsw_recommend_ef_search rejects non-hnsw indexes
+CREATE TABLE t (val vector(3));
+INSERT INTO t (val) VALUES ('[0,0,0]'), ('[1,2,3]'), ('[1,1,1]'), (NULL);
+CREATE INDEX t_val_idx ON t USING ivfflat (val vector_l2_ops) WITH (lists = 4);
+SELECT hnsw_recommend_ef_search('t_val_idx'::regclass);
 DROP TABLE t;
