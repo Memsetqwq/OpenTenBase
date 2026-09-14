@@ -81,7 +81,7 @@ BEGIN
     -- ------------------------------------------------------------------------
     -- session-scoped priority queue
     -- ------------------------------------------------------------------------
-    EXECUTE 'DROP TABLE IF EXISTS pg_temp._wsp_frontier';
+    DROP TABLE IF EXISTS _wsp_frontier;
     CREATE TEMP TABLE _wsp_frontier (
         cost    double precision,
         node    bigint,
@@ -97,10 +97,10 @@ BEGIN
     -- Dijkstra main loop: always expand the cheapest frontier entry first
     -- ------------------------------------------------------------------------
     LOOP
-        SELECT cost, node, path, visited
+        SELECT f.cost, f.node, f.path, f.visited
           INTO cur_cost, cur_node, cur_path, cur_visit
-          FROM _wsp_frontier
-          ORDER BY cost
+          FROM _wsp_frontier f
+          ORDER BY f.cost
           LIMIT 1;
 
         IF NOT FOUND THEN

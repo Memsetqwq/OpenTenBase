@@ -115,7 +115,8 @@ INSERT INTO g_edges VALUES (1, 1, 5.0), (1, 2, 1.0);
 SELECT * FROM opentenbase_graph.weighted_shortest_path(
     'g_edges', 'src', 'dst', 'weight', 1, 2, 100.0);
 
--- cycle + off-tree target: A->B->C->A (1 each), A->D (5); D->C goes D->A->B->C, cost=7
+-- cycle handling: A->B->C->A (1 each), A->D (5)
+-- shortest from 1 to 3 goes via the cycle 1->2->3 (cost=2, hops=2), not 1->2->3->1->2->3 (would loop forever)
 TRUNCATE g_edges;
 INSERT INTO g_edges VALUES
     (1, 2, 1.0),
@@ -123,7 +124,11 @@ INSERT INTO g_edges VALUES
     (3, 1, 1.0),
     (1, 4, 5.0);
 SELECT * FROM opentenbase_graph.weighted_shortest_path(
-    'g_edges', 'src', 'dst', 'weight', 4, 3, 100.0);
+    'g_edges', 'src', 'dst', 'weight', 1, 3, 100.0);
+
+-- off-tree target: 1 -> 4 directly (cost=5, hops=1) via the D edge
+SELECT * FROM opentenbase_graph.weighted_shortest_path(
+    'g_edges', 'src', 'dst', 'weight', 1, 4, 100.0);
 
 -- weighted_bad identifier: weight_col injection attempt must error
 SELECT opentenbase_graph.weighted_shortest_path(
